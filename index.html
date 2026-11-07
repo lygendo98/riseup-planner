@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <title>Riseup Macro Planner</title>
+    <!-- טעינת ספריות לתרשימים ולפענוח ה-CSV -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+    <style>
+        body { font-family: system-ui, -apple-system, sans-serif; margin: 20px; background: #f8f9fa; color: #333; }
+        .container { max-width: 900px; margin: 0 auto; }
+        .upload-area { border: 2px dashed #007bff; padding: 30px; text-align: center; border-radius: 8px; background: white; margin-bottom: 20px; transition: 0.3s; }
+        .upload-area:hover { background: #f1f8ff; }
+        .kpi-board { display: flex; gap: 20px; margin-bottom: 20px; display: none; }
+        .kpi-card { flex: 1; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); text-align: center; }
+        .kpi-value { font-size: 24px; font-weight: bold; margin-top: 10px; }
+        .positive { color: #28a745; }
+        .negative { color: #dc3545; }
+        canvas { background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>השלמה לרייזאפ - תכנון ארוך טווח</h1>
+        
+        <div class="upload-area">
+            <h3>בחר את קובץ ה-CSV שהורדת מרייזאפ</h3>
+            <input type="file" id="csvUpload" accept=".csv">
+        </div>
+
+        <div class="kpi-board" id="kpiBoard">
+            <div class="kpi-card">
+                <div>ממוצע הכנסות חודשי</div>
+                <div id="avgIncome" class="kpi-value positive">0 ₪</div>
+            </div>
+            <div class="kpi-card">
+                <div>ממוצע הוצאות מחיה (ללא חסכונות)</div>
+                <div id="avgExpense" class="kpi-value negative">0 ₪</div>
+            </div>
+            <div class="kpi-card">
+                <div>כושר חיסכון חודשי ממוצע</div>
+                <div id="avgSavings" class="kpi-value">0 ₪</div>
+            </div>
+        </div>
+
+        <canvas id="trendChart" style="max-height: 400px; display: none;"></canvas>
+    </div>
+
+    <script>
+        let myChart = null;
+
+        document.getElementById('csvUpload').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            Papa.parse(file, {
+                header: true,
+                dynamicTyping: true,
+                skipEmptyLines: true,
+                complete: function(results) {
+                    processData(results.data);
+                }
+            });
+        });
+
+        function processData(data) {
+            // ניקוי המפתח הראשון מתווי BOM שנוספים באקסל בעברית
+            const rawKeys = Object.keys(data[0]);
+            const monthKey = rawKeys.find(k => k.includes('שייך לתזרים'));
+
+            const monthlyStats = {};
+            let totalIncome = 0;
+            let totalExpense = 0;
+            let monthsCount = 0;
+
+            data.forEach(row => {
+                // התעלמות משורות שהוחרגו מהתזרים
+                if(row['האם מוחרג מהתזרים?'] === true || !row['סכום']) return;
+
+                const monthYear = row[monthKey];
+                if (!monthYear) return;
+
+                if(!monthlyStats[monthYear]) {
+                    monthlyStats[monthYear] = { income: 0, expense: 0 };
+                    monthsCount++;
+                }
+
+                const amount = parseFloat(row['סכום']);
+                const category = row['קטגוריה בתזרים'] || '';
+
+                // אנו מפרידים חסכונות מהוצאות כדי לראות את עלות המחיה האמיתית
+                const isSavings = category.includes('חסכון') || category.includes('חיסכון');
+
+                if(amount > 0) {
+                    monthlyStats[monthYear].income += amount;
+                    totalIncome += amount;
+                } else if (!isSavings) {
+                    monthlyStats[monthYear].expense += Math.abs(amount);
+                    totalExpense += Math.abs(amount);
+                }
+            });
+
+            // עדכון חלוניות ה-KPI
+            const avgInc = totalIncome / monthsCount;
+            const avgExp = totalExpense / monthsCount;
+            const avgSav = avgInc - avgExp;
+
+            document.getElementById('avgIncome').innerText = Math.round(avgInc).toLocaleString() + ' ₪';
+            document.getElementById('avgExpense').innerText = Math.round(avgExp).toLocaleString() + ' ₪';
+            const elSavings = document.getElementById('avgSavings');
+            elSavings.innerText = Math.round(avgSav).toLocaleString() + ' ₪';
+            elSavings.className = 'kpi-value ' + (avgSav >= 0 ? 'positive' : 'negative');
+            
+            document.getElementById('kpiBoard').style.display = 'flex';
+
+            // הכנת נתונים לגרף
+            const sortedMonths = Object.keys(monthlyStats).sort();
+            const savingsTrend = sortedMonths.map(m => monthlyStats[m].income - monthlyStats[m].expense);
+
+            document.getElementById('trendChart').style.display = 'block';
+            
+            if (myChart) myChart.destroy();
+            
+            myChart = new Chart(document.getElementById('trendChart'), {
+                type: 'bar',
+                data: {
+                    labels: sortedMonths,
+                    datasets: [{
+                        label: 'עודף תזרימי (הכנסות פחות הוצאות)',
+                        data: savingsTrend,
+                        backgroundColor: savingsTrend.map(val => val > 0 ? '#28a745' : '#dc3545'),
+                        borderRadius: 4
+                    }]
+                },
+                options: { 
+                    responsive: true, 
+                    plugins: { 
+                        title: { display: true, text: 'מגמת חיסכון חודשית היסטורית', font: { size: 16 } } 
+                    } 
+                }
+            });
+        }
+    </script>
+</body>
+</html>
